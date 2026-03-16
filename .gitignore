@@ -1,0 +1,17 @@
+node_modules/
+.env
+.env.*
+!.env.example
+uploads/
+transcripts/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+*.local
+uploads/**/*.tmp

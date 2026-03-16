@@ -1,0 +1,19 @@
+{
+  "name": "node-transcriber",
+  "version": "1.0.0",
+  "description": "Web app to upload audio, transcribe with OpenAI Whisper, and download txt/docx or a bundled txt zip.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "axios": "*",
+    "docx": "*",
+    "dotenv": "*",
+    "express": "*",
+    "form-data": "*",
+    "jszip": "^3.10.1",
+    "multer": "*"
+  }
+}
