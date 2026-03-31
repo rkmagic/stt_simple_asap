@@ -8,7 +8,7 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
-    "axios": "*",
+    "axios": "1.13.6",
     "docx": "*",
     "dotenv": "*",
     "express": "*",
