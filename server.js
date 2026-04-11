@@ -280,6 +280,200 @@ async function splitIntoChunksIfNeeded(file, oversizeFiles) {
   return chunks;
 }
 
+/** When API_KEY is set, POST /api/transcribe requires Authorization: Bearer <API_KEY>. */
+function optionalApiKey(req, res, next) {
+  const key = process.env.API_KEY;
+  if (!key || !String(key).trim()) {
+    return next();
+  }
+  const auth = req.headers.authorization || "";
+  const match = /^Bearer\s+(\S+)/i.exec(auth);
+  const token = match ? match[1] : "";
+  if (token !== String(key).trim()) {
+    return res.status(401).json({
+      error:
+        "Unauthorized. Send header Authorization: Bearer <API_KEY> matching the API_KEY environment variable.",
+    });
+  }
+  return next();
+}
+
+async function transcribeUploadedFiles(files, { language, generateDocx, jobId }) {
+  const items = [];
+  const oversizeFiles = [];
+  let totalItems = files.length;
+  let completedItems = 0;
+  const lang = (language || "").trim();
+  const trackJob = typeof jobId === "string" && jobId.length > 0;
+
+  const job = (updates) => {
+    if (trackJob) {
+      upsertJob(jobId, updates);
+    }
+  };
+
+  try {
+    for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+      const file = files[fileIndex];
+      const originalFilename = file.originalname || "audio";
+
+      job({
+        status: "processing",
+        message: "Preparing audio for transcription.",
+        detail: `Checking ${originalFilename} (${fileIndex + 1} of ${files.length}).`,
+        progress: Math.max(
+          5,
+          Math.min(
+            90,
+            Math.round((completedItems / Math.max(totalItems, 1)) * 100)
+          )
+        ),
+        totalItems,
+        completedItems,
+      });
+
+      const chunks = await splitIntoChunksIfNeeded(file, oversizeFiles);
+      if (chunks.length > 1) {
+        totalItems += chunks.length - 1;
+        job({
+          status: "processing",
+          message: "Audio split into smaller parts.",
+          detail: `${originalFilename} was split into ${chunks.length} parts for the API.`,
+          progress: Math.max(
+            5,
+            Math.min(
+              90,
+              Math.round((completedItems / Math.max(totalItems, 1)) * 100)
+            )
+          ),
+          totalItems,
+          completedItems,
+        });
+      }
+
+      if (!chunks || chunks.length === 0) {
+        fs.unlink(file.path, () => {});
+        continue;
+      }
+
+      for (let index = 0; index < chunks.length; index += 1) {
+        const chunk = chunks[index];
+        const partLabel =
+          chunk.labelSuffix || (chunks.length > 1 ? ` (part ${index + 1})` : "");
+        const displayName = `${originalFilename}${partLabel}`;
+        const id = crypto.randomUUID();
+
+        job({
+          status: "processing",
+          message: "Transcription request sent to OpenAI.",
+          detail: `${displayName} (${completedItems + 1} of ${totalItems}).`,
+          progress: Math.max(
+            10,
+            Math.min(
+              92,
+              Math.round((completedItems / Math.max(totalItems, 1)) * 100)
+            )
+          ),
+          totalItems,
+          completedItems,
+        });
+
+        const transcriptText = await transcribeWithOpenAI(
+          chunk.path,
+          lang || undefined
+        );
+
+        const txtFilename = `${id}.txt`;
+        const txtPath = path.join(transcriptsDir, txtFilename);
+        fs.writeFileSync(txtPath, transcriptText, "utf8");
+
+        let docxFilename = null;
+        if (generateDocx) {
+          docxFilename = `${id}.docx`;
+          const docxPath = path.join(transcriptsDir, docxFilename);
+          await createDocx(docxPath, displayName, transcriptText);
+        }
+
+        items.push({
+          id,
+          originalFilename: displayName,
+          transcriptText,
+          txtFilename,
+          docxFilename,
+        });
+
+        completedItems += 1;
+        job({
+          status: "processing",
+          message: "Transcript received from OpenAI.",
+          detail: `${displayName} is ready.`,
+          progress: Math.max(
+            15,
+            Math.min(
+              97,
+              Math.round((completedItems / Math.max(totalItems, 1)) * 100)
+            )
+          ),
+          totalItems,
+          completedItems,
+        });
+
+        if (chunk.path && chunk.path !== file.path) {
+          fs.unlink(chunk.path, () => {});
+        }
+      }
+
+      if (fs.existsSync(file.path)) {
+        fs.unlink(file.path, () => {});
+      }
+    }
+
+    return { items, oversizeFiles, totalItems, completedItems };
+  } catch (error) {
+    error.transcribeState = { completedItems, totalItems };
+    throw error;
+  }
+}
+
+async function buildZipBufferFromItems(items, { includeDocx }) {
+  const zip = new JSZip();
+  const usedNames = new Set();
+
+  for (const item of items) {
+    const txtPath = path.join(transcriptsDir, item.txtFilename);
+    if (!fs.existsSync(txtPath)) {
+      continue;
+    }
+
+    const requestedName = sanitizeDownloadName(
+      item.originalFilename,
+      item.txtFilename
+    );
+    const txtArchiveName = createUniqueName(
+      ensureExtension(requestedName, ".txt"),
+      usedNames
+    );
+    zip.file(txtArchiveName, fs.readFileSync(txtPath, "utf8"));
+
+    if (includeDocx && item.docxFilename) {
+      const docxPath = path.join(transcriptsDir, item.docxFilename);
+      if (fs.existsSync(docxPath)) {
+        const docxArchiveName = createUniqueName(
+          `${path.parse(txtArchiveName).name}.docx`,
+          usedNames
+        );
+        zip.file(docxArchiveName, fs.readFileSync(docxPath));
+      }
+    }
+  }
+
+  if (usedNames.size === 0) {
+    throw new Error("No transcript files to include in the archive.");
+  }
+
+  return zip.generateAsync({ type: "nodebuffer" });
+}
+
 app.post("/upload", upload.array("files"), async (req, res) => {
   const generateDocx = req.body.generate_docx === "1";
   const language = (req.body.language || "").trim();
@@ -305,132 +499,14 @@ app.post("/upload", upload.array("files"), async (req, res) => {
     completedItems: 0,
   });
 
-  const items = [];
-  const oversizeFiles = [];
-  let totalItems = req.files.length;
-  let completedItems = 0;
-
   try {
-    for (let fileIndex = 0; fileIndex < req.files.length; fileIndex += 1) {
-      const file = req.files[fileIndex];
-      const originalFilename = file.originalname || "audio";
-
-      upsertJob(jobId, {
-        status: "processing",
-        message: "Preparing audio for transcription.",
-        detail: `Checking ${originalFilename} (${fileIndex + 1} of ${req.files.length}).`,
-        progress: Math.max(
-          5,
-          Math.min(
-            90,
-            Math.round((completedItems / Math.max(totalItems, 1)) * 100)
-          )
-        ),
-        totalItems,
-        completedItems,
+    const { items, oversizeFiles, totalItems, completedItems } =
+      await transcribeUploadedFiles(req.files, {
+        language,
+        generateDocx,
+        jobId,
       });
 
-      // Split large files into multiple chunks under the API size limit.
-      const chunks = await splitIntoChunksIfNeeded(file, oversizeFiles);
-      if (chunks.length > 1) {
-        totalItems += chunks.length - 1;
-        upsertJob(jobId, {
-          status: "processing",
-          message: "Audio split into smaller parts.",
-          detail: `${originalFilename} was split into ${chunks.length} parts for the API.`,
-          progress: Math.max(
-            5,
-            Math.min(
-              90,
-              Math.round((completedItems / Math.max(totalItems, 1)) * 100)
-            )
-          ),
-          totalItems,
-          completedItems,
-        });
-      }
-
-      if (!chunks || chunks.length === 0) {
-        // Nothing to process for this file (likely all chunks were oversize).
-        fs.unlink(file.path, () => {});
-        continue;
-      }
-
-      for (let index = 0; index < chunks.length; index += 1) {
-        const chunk = chunks[index];
-        const partLabel =
-          chunk.labelSuffix || (chunks.length > 1 ? ` (part ${index + 1})` : "");
-        const displayName = `${originalFilename}${partLabel}`;
-        const id = crypto.randomUUID();
-
-        upsertJob(jobId, {
-          status: "processing",
-          message: "Transcription request sent to OpenAI.",
-          detail: `${displayName} (${completedItems + 1} of ${totalItems}).`,
-          progress: Math.max(
-            10,
-            Math.min(
-              92,
-              Math.round((completedItems / Math.max(totalItems, 1)) * 100)
-            )
-          ),
-          totalItems,
-          completedItems,
-        });
-
-        const transcriptText = await transcribeWithOpenAI(
-          chunk.path,
-          language || undefined
-        );
-
-        const txtFilename = `${id}.txt`;
-        const txtPath = path.join(transcriptsDir, txtFilename);
-        fs.writeFileSync(txtPath, transcriptText, "utf8");
-
-        let docxFilename = null;
-        if (generateDocx) {
-          docxFilename = `${id}.docx`;
-          const docxPath = path.join(transcriptsDir, docxFilename);
-          await createDocx(docxPath, displayName, transcriptText);
-        }
-
-        items.push({
-          id,
-          originalFilename: displayName,
-          transcriptText,
-          txtFilename,
-          docxFilename,
-        });
-
-        completedItems += 1;
-        upsertJob(jobId, {
-          status: "processing",
-          message: "Transcript received from OpenAI.",
-          detail: `${displayName} is ready.`,
-          progress: Math.max(
-            15,
-            Math.min(
-              97,
-              Math.round((completedItems / Math.max(totalItems, 1)) * 100)
-            )
-          ),
-          totalItems,
-          completedItems,
-        });
-
-        // Remove the temporary chunk file when done.
-        if (chunk.path && chunk.path !== file.path) {
-          fs.unlink(chunk.path, () => {});
-        }
-      }
-
-      // Always remove the original upload once every chunk is processed.
-      if (fs.existsSync(file.path)) {
-        fs.unlink(file.path, () => {});
-      }
-    }
-
-    // If every file was too large, return a clear error
     if (oversizeFiles.length > 0 && items.length === 0) {
       upsertJob(jobId, {
         status: "failed",
@@ -449,7 +525,6 @@ app.post("/upload", upload.array("files"), async (req, res) => {
       });
     }
 
-    // Otherwise, return successful items and optionally note skipped oversized files
     const completionDetail =
       oversizeFiles.length > 0
         ? `${items.length} transcript(s) ready. ${oversizeFiles.length} file(s) were skipped because they were too large.`
@@ -472,6 +547,9 @@ app.post("/upload", upload.array("files"), async (req, res) => {
     );
     const status = error.response?.status || 500;
     const apiMessage = error.response?.data?.error?.message;
+    const state = error.transcribeState || {};
+    const totalItems = state.totalItems ?? req.files.length;
+    const completedItems = state.completedItems ?? 0;
     upsertJob(jobId, {
       status: "failed",
       message: "Transcription failed.",
@@ -491,6 +569,71 @@ app.post("/upload", upload.array("files"), async (req, res) => {
     });
   }
 });
+
+app.post(
+  "/api/transcribe",
+  optionalApiKey,
+  upload.array("files"),
+  async (req, res) => {
+    const generateDocx = req.body.generate_docx === "1";
+    const language = (req.body.language || "").trim();
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: "No files uploaded." });
+    }
+
+    try {
+      const { items, oversizeFiles } = await transcribeUploadedFiles(
+        req.files,
+        {
+          language,
+          generateDocx,
+          jobId: null,
+        }
+      );
+
+      if (oversizeFiles.length > 0 && items.length === 0) {
+        return res.status(400).json({
+          error:
+            "One or more files are too large for the OpenAI Whisper API (max ~25 MB per file). Please trim or compress them and try again.",
+          oversizeFiles,
+          maxBytes: MAX_FILE_BYTES,
+        });
+      }
+
+      const buffer = await buildZipBufferFromItems(items, {
+        includeDocx: generateDocx,
+      });
+      const archiveFilename = `transcripts-${new Date()
+        .toISOString()
+        .slice(0, 10)}.zip`;
+
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${archiveFilename}"`
+      );
+      res.setHeader("X-Transcript-Count", String(items.length));
+      if (oversizeFiles.length > 0) {
+        res.setHeader(
+          "X-Oversize-Warning",
+          `${oversizeFiles.length} file(s) skipped (too large).`
+        );
+      }
+      res.send(buffer);
+    } catch (error) {
+      console.error(
+        "API transcribe error:",
+        error.response?.data || error.message
+      );
+      const status = error.response?.status || 500;
+      const apiMessage = error.response?.data?.error?.message;
+      res.status(status).json({
+        error: apiMessage || error.message || "Failed to transcribe audio.",
+      });
+    }
+  }
+);
 
 app.get("/status/:jobId", (req, res) => {
   const job = jobs.get(req.params.jobId);

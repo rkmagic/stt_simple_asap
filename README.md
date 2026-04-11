@@ -101,6 +101,34 @@ Run the server in watch mode:
 npm run dev
 ```
 
+## Workflow API (ZIP in one request)
+
+`POST /api/transcribe` accepts the same multipart fields as the browser upload:
+
+- **`files`** — one or more audio files (required).
+- **`language`** — optional Whisper language code (e.g. `en`).
+- **`generate_docx`** — set to `1` to include matching `.docx` files in the ZIP (optional).
+
+On success the response is a **`application/zip`** attachment containing `.txt` transcripts (friendly names inside the archive). If `generate_docx` is enabled, each transcript’s `.docx` is included when present.
+
+**Authentication (recommended for public URLs):** If you set **`API_KEY`** in `.env`, clients must send:
+
+`Authorization: Bearer <API_KEY>`
+
+If `API_KEY` is not set, the endpoint accepts requests without a bearer token (suitable for local development only).
+
+Example with `curl` (replace host and paths):
+
+```bash
+curl -sS -X POST "http://localhost:3000/api/transcribe" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -F "files=@/path/to/audio.m4a" \
+  -F "language=en" \
+  -o transcripts.zip
+```
+
+For long jobs where HTTP timeouts are a problem, use the existing **`POST /upload`** (JSON with transcript metadata), **`GET /status/:jobId`**, and **`POST /download-zip`** flow instead.
+
 ## Notes
 
 - `.env`, generated uploads, and generated transcripts are ignored by `.gitignore`.
@@ -111,3 +139,4 @@ npm run dev
 
 - Never commit your `.env` file. It contains your API key.
 - If you accidentally commit a key to GitHub, rotate it immediately.
+- For deployments exposed to the internet, set **`API_KEY`** and call **`/api/transcribe`** with the **`Authorization: Bearer`** header so only trusted clients can use your server (OpenAI usage still goes through your `OPENAI_API_KEY`).
