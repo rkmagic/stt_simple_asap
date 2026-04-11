@@ -5,15 +5,21 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "verify:age": "node scripts/check-minimum-release-age.mjs",
+    "verify:audit": "npm audit --audit-level=moderate",
+    "verify": "npm run verify:age && npm run verify:audit"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
-    "axios": "1.13.6",
-    "docx": "*",
-    "dotenv": "*",
-    "express": "*",
-    "form-data": "*",
-    "jszip": "^3.10.1",
-    "multer": "*"
+    "axios": "1.15.0",
+    "docx": "9.6.0",
+    "dotenv": "17.3.1",
+    "express": "5.2.1",
+    "form-data": "4.0.5",
+    "jszip": "3.10.1",
+    "multer": "2.1.1"
   }
 }

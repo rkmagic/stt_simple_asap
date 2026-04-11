@@ -101,6 +101,27 @@ Run the server in watch mode:
 npm run dev
 ```
 
+## Docker and Render
+
+The included **[`Dockerfile`](Dockerfile)** builds **Node 20**, installs **FFmpeg** (needed for splitting large audio), runs **`npm ci`**, checks **minimum package age** on the registry, and **`npm audit`**. Deploy as a **Web Service** with **Docker** runtime (for example [Render](https://render.com)) and point the start command at the image default (`node server.js`).
+
+- **[`render.yaml`](render.yaml)** is a [Render Blueprint](https://render.com/docs/blueprint-spec) stub: connect the repo, set **Environment** → **OPENAI_API_KEY**, and optionally **API_KEY** for `/api/transcribe`.
+- **Port:** the server listens on **`process.env.PORT`** (Render sets this automatically).
+
+Build locally:
+
+```bash
+docker build -t node-transcriber .
+docker run --rm -p 3000:3000 -e OPENAI_API_KEY=your_key_here node-transcriber
+```
+
+## Dependency verification
+
+Project **[`.npmrc`](.npmrc)** enables **`npm audit`** at **moderate** severity and **`engine-strict`** against **`package.json`** `engines`.
+
+- **`npm run verify`** — runs [`scripts/check-minimum-release-age.mjs`](scripts/check-minimum-release-age.mjs) (every locked dependency must have been published on npm at least **`MIN_RELEASE_AGE_DAYS`** ago; default **3** days to balance supply-chain caution with timely security patches) and **`npm audit --audit-level=moderate`**.
+- **`MIN_RELEASE_AGE_DAYS`** — stricter value (e.g. `7`) in CI or `.env` when you can accept that **new security releases** may fail the age check until they age in (then temporarily raise the limit or use **`SKIP_MIN_RELEASE_AGE=1`** only as an emergency bypass).
+
 ## Workflow API (ZIP in one request)
 
 `POST /api/transcribe` accepts the same multipart fields as the browser upload:
