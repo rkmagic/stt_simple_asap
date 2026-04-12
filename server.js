@@ -30,6 +30,32 @@ fs.mkdirSync(transcriptsDir, { recursive: true });
 
 const upload = multer({ dest: uploadDir });
 
+/** UI uses "files"; many HTTP clients (e.g. Make) default to "file". */
+const MAX_AUDIO_FILES = 50;
+const uploadAudio = upload.fields([
+  { name: "files", maxCount: MAX_AUDIO_FILES },
+  { name: "file", maxCount: MAX_AUDIO_FILES },
+  { name: "audio", maxCount: MAX_AUDIO_FILES },
+]);
+
+function getUploadedAudioFiles(req) {
+  const raw = req.files;
+  if (!raw) {
+    return [];
+  }
+  if (Array.isArray(raw)) {
+    return raw;
+  }
+  const out = [];
+  for (const name of ["files", "file", "audio"]) {
+    const chunk = raw[name];
+    if (Array.isArray(chunk)) {
+      out.push(...chunk);
+    }
+  }
+  return out;
+}
+
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -474,13 +500,14 @@ async function buildZipBufferFromItems(items, { includeDocx }) {
   return zip.generateAsync({ type: "nodebuffer" });
 }
 
-app.post("/upload", upload.array("files"), async (req, res) => {
+app.post("/upload", uploadAudio, async (req, res) => {
   const generateDocx = req.body.generate_docx === "1";
   const language = (req.body.language || "").trim();
   const requestedJobId = (req.body.job_id || "").trim();
   const jobId = requestedJobId || crypto.randomUUID();
+  const uploadedFiles = getUploadedAudioFiles(req);
 
-  if (!req.files || req.files.length === 0) {
+  if (!uploadedFiles.length) {
     upsertJob(jobId, {
       status: "failed",
       message: "No files were received.",
@@ -493,15 +520,15 @@ app.post("/upload", upload.array("files"), async (req, res) => {
   upsertJob(jobId, {
     status: "processing",
     message: "Files received by server.",
-    detail: `${req.files.length} file(s) ready for processing.`,
+    detail: `${uploadedFiles.length} file(s) ready for processing.`,
     progress: 5,
-    totalItems: req.files.length,
+    totalItems: uploadedFiles.length,
     completedItems: 0,
   });
 
   try {
     const { items, oversizeFiles, totalItems, completedItems } =
-      await transcribeUploadedFiles(req.files, {
+      await transcribeUploadedFiles(uploadedFiles, {
         language,
         generateDocx,
         jobId,
@@ -548,7 +575,7 @@ app.post("/upload", upload.array("files"), async (req, res) => {
     const status = error.response?.status || 500;
     const apiMessage = error.response?.data?.error?.message;
     const state = error.transcribeState || {};
-    const totalItems = state.totalItems ?? req.files.length;
+    const totalItems = state.totalItems ?? uploadedFiles.length;
     const completedItems = state.completedItems ?? 0;
     upsertJob(jobId, {
       status: "failed",
@@ -573,18 +600,19 @@ app.post("/upload", upload.array("files"), async (req, res) => {
 app.post(
   "/api/transcribe",
   optionalApiKey,
-  upload.array("files"),
+  uploadAudio,
   async (req, res) => {
     const generateDocx = req.body.generate_docx === "1";
     const language = (req.body.language || "").trim();
+    const uploadedFiles = getUploadedAudioFiles(req);
 
-    if (!req.files || req.files.length === 0) {
+    if (!uploadedFiles.length) {
       return res.status(400).json({ error: "No files uploaded." });
     }
 
     try {
       const { items, oversizeFiles } = await transcribeUploadedFiles(
-        req.files,
+        uploadedFiles,
         {
           language,
           generateDocx,
@@ -700,6 +728,20 @@ app.get("/download/:filename", (req, res) => {
 
   const downloadName = sanitizeDownloadName(req.query.name, filename);
   res.download(filePath, downloadName);
+});
+
+app.use((err, req, res, next) => {
+  if (!(err instanceof multer.MulterError)) {
+    return next(err);
+  }
+  if (err.code === "LIMIT_UNEXPECTED_FILE") {
+    return res.status(400).json({
+      error: "Unexpected multipart field for file upload.",
+      hint:
+        'Use field name "files" (browser default), "file" (common in Make/Postman), or "audio" for each audio part.',
+    });
+  }
+  return res.status(400).json({ error: err.message, code: err.code });
 });
 
 app.listen(port, () => {
