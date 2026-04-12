@@ -25,12 +25,12 @@ The app runs on **Windows**, **macOS**, and **Linux**. It uses Node.js and stand
 
 ## FFmpeg Setup
 
-FFmpeg is **required only for files larger than 25 MB**. The app uses `ffprobe` to read audio duration and `ffmpeg` to split oversized files into chunks before sending them to the Whisper API. Without FFmpeg, files over 25 MB will be rejected with a "file too big" error.
+FFmpeg is **required for files larger than 25 MB** (splitting). It is **also used** when an upload is **MPEG-4 with a 3GPP brand** (common for Telegram voice notes: `ftyp` `3gp4` even if the filename ends in `.m4a`): the server **re-encodes to AAC in MP4** before calling OpenAI, because the Whisper API often rejects raw `3gp4` containers. Without FFmpeg, oversize files fail; 3GPP-style uploads may still fail at OpenAI.
 
 ### Why FFmpeg?
 
 - **ffprobe**: Gets the duration of the audio so the app can split it into segments.
-- **ffmpeg**: Splits the file into chunks under 25 MB using stream copy (no re-encoding).
+- **ffmpeg**: Splits the file into chunks under 25 MB using stream copy (no re-encoding), and can **remux/re-encode** 3GPP-style audio into Whisper-friendly MP4/AAC.
 
 Both must be available on your system `PATH` so the Node.js server can run them.
 

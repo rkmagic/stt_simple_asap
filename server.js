@@ -293,6 +293,83 @@ async function transcribeWithOpenAI(
   return response.data.text || "";
 }
 
+async function readISOBMFFMajorBrand(filePath) {
+  const fh = await fs.promises.open(filePath, "r");
+  try {
+    const buf = Buffer.alloc(32);
+    const { bytesRead } = await fh.read(buf, 0, 32, 0);
+    if (bytesRead < 12) {
+      return null;
+    }
+    if (buf.slice(4, 8).toString("ascii") !== "ftyp") {
+      return null;
+    }
+    return buf.slice(8, 12).toString("ascii");
+  } finally {
+    await fh.close();
+  }
+}
+
+function needsWhisperContainerRemux(majorBrand) {
+  if (!majorBrand || majorBrand.length !== 4) {
+    return false;
+  }
+  const m = majorBrand.toLowerCase();
+  return m.startsWith("3gp") || m.startsWith("3g2");
+}
+
+/** Telegram voice “m4a” often uses ftyp 3gp4; OpenAI rejects that brand — remux to AAC/MP4. */
+async function remuxForOpenAIWhisperCompat(inputPath) {
+  const outPath = path.join(
+    uploadDir,
+    `whisper-openai-${crypto.randomUUID()}.m4a`
+  );
+  await execFileAsync("ffmpeg", [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-y",
+    "-i",
+    inputPath,
+    "-vn",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-ar",
+    "48000",
+    "-movflags",
+    "+faststart",
+    "-f",
+    "mp4",
+    outPath,
+  ]);
+  const st = await fs.promises.stat(outPath);
+  if (st.size === 0) {
+    throw new Error("ffmpeg produced empty output");
+  }
+  return outPath;
+}
+
+async function resolvePathForOpenAIWhisper(inputPath) {
+  let majorBrand = null;
+  try {
+    majorBrand = await readISOBMFFMajorBrand(inputPath);
+  } catch {
+    return { path: inputPath, tempPath: null };
+  }
+  if (!needsWhisperContainerRemux(majorBrand)) {
+    return { path: inputPath, tempPath: null };
+  }
+  try {
+    const out = await remuxForOpenAIWhisperCompat(inputPath);
+    return { path: out, tempPath: out };
+  } catch (e) {
+    console.error("OpenAI whisper normalize (ffmpeg):", e.message);
+    return { path: inputPath, tempPath: null };
+  }
+}
+
 async function createDocx(filePath, title, text) {
   const doc = new Document({
     sections: [
@@ -612,11 +689,19 @@ async function transcribeUploadedFiles(files, { language, generateDocx, jobId })
           chunk,
           chunks.length
         );
-        const transcriptText = await transcribeWithOpenAI(
-          chunk.path,
-          lang || undefined,
-          { clientFilename: whisperName, clientMime: file.mimetype }
-        );
+        const openIn = await resolvePathForOpenAIWhisper(chunk.path);
+        let transcriptText;
+        try {
+          transcriptText = await transcribeWithOpenAI(
+            openIn.path,
+            lang || undefined,
+            { clientFilename: whisperName, clientMime: file.mimetype }
+          );
+        } finally {
+          if (openIn.tempPath && fs.existsSync(openIn.tempPath)) {
+            fs.unlink(openIn.tempPath, () => {});
+          }
+        }
 
         const txtFilename = `${id}.txt`;
         const txtPath = path.join(transcriptsDir, txtFilename);
