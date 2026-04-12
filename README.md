@@ -126,7 +126,7 @@ Project **[`.npmrc`](.npmrc)** enables **`npm audit`** at **moderate** severity 
 
 `POST /api/transcribe` accepts the same multipart fields as the browser upload:
 
-- **Audio field name** — send one or more parts using any of: **`files`** (browser default), **`file`** (common in Make/Postman), or **`audio`**. Other file field names return **400** with a hint.
+- **Audio field name** — send one or more parts using any of: **`files`** (browser default), **`file`** (Make/Postman), **`audio`**, or **`audio_file`**. Other file field names return **400** with a hint.
 - **`language`** — optional Whisper language code (e.g. `en`).
 - **`generate_docx`** — set to `1` to include matching `.docx` files in the ZIP (optional).
 

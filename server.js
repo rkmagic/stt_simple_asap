@@ -36,6 +36,7 @@ const uploadAudio = upload.fields([
   { name: "files", maxCount: MAX_AUDIO_FILES },
   { name: "file", maxCount: MAX_AUDIO_FILES },
   { name: "audio", maxCount: MAX_AUDIO_FILES },
+  { name: "audio_file", maxCount: MAX_AUDIO_FILES },
 ]);
 
 function getUploadedAudioFiles(req) {
@@ -47,7 +48,7 @@ function getUploadedAudioFiles(req) {
     return raw;
   }
   const out = [];
-  for (const name of ["files", "file", "audio"]) {
+  for (const name of ["files", "file", "audio", "audio_file"]) {
     const chunk = raw[name];
     if (Array.isArray(chunk)) {
       out.push(...chunk);
@@ -738,7 +739,7 @@ app.use((err, req, res, next) => {
     return res.status(400).json({
       error: "Unexpected multipart field for file upload.",
       hint:
-        'Use field name "files" (browser default), "file" (common in Make/Postman), or "audio" for each audio part.',
+        'Use field name "files", "file", "audio", or "audio_file" for each audio part.',
     });
   }
   return res.status(400).json({ error: err.message, code: err.code });
