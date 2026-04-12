@@ -30,31 +30,40 @@ fs.mkdirSync(transcriptsDir, { recursive: true });
 
 const upload = multer({ dest: uploadDir });
 
-/** UI uses "files"; many HTTP clients (e.g. Make) default to "file". */
-const MAX_AUDIO_FILES = 50;
-const uploadAudio = upload.fields([
-  { name: "files", maxCount: MAX_AUDIO_FILES },
-  { name: "file", maxCount: MAX_AUDIO_FILES },
-  { name: "audio", maxCount: MAX_AUDIO_FILES },
-  { name: "audio_file", maxCount: MAX_AUDIO_FILES },
+/**
+ * Accept any multipart file parts, then keep only known field names.
+ * (Make and other tools sometimes send an extra file part with another name;
+ * multer.fields() rejects the whole request with LIMIT_UNEXPECTED_FILE.)
+ */
+const MAX_MULTIPART_FILE_PARTS = 80;
+const AUDIO_FILE_FIELD_NAMES = new Set([
+  "files",
+  "file",
+  "audio",
+  "audio_file",
 ]);
 
-function getUploadedAudioFiles(req) {
-  const raw = req.files;
-  if (!raw) {
-    return [];
-  }
-  if (Array.isArray(raw)) {
-    return raw;
-  }
-  const out = [];
-  for (const name of ["files", "file", "audio", "audio_file"]) {
-    const chunk = raw[name];
-    if (Array.isArray(chunk)) {
-      out.push(...chunk);
+const uploadAny = multer({
+  dest: uploadDir,
+  limits: { files: MAX_MULTIPART_FILE_PARTS },
+}).any();
+
+function resolveAudioUploads(req, res, next) {
+  const parts = req.files || [];
+  const accepted = [];
+  for (const f of parts) {
+    if (AUDIO_FILE_FIELD_NAMES.has(f.fieldname)) {
+      accepted.push(f);
+    } else if (f.path) {
+      fs.unlink(f.path, () => {});
     }
   }
-  return out;
+  req.audioUploadFiles = accepted;
+  next();
+}
+
+function getUploadedAudioFiles(req) {
+  return Array.isArray(req.audioUploadFiles) ? req.audioUploadFiles : [];
 }
 
 app.use(express.json({ limit: "1mb" }));
@@ -501,7 +510,7 @@ async function buildZipBufferFromItems(items, { includeDocx }) {
   return zip.generateAsync({ type: "nodebuffer" });
 }
 
-app.post("/upload", uploadAudio, async (req, res) => {
+app.post("/upload", uploadAny, resolveAudioUploads, async (req, res) => {
   const generateDocx = req.body.generate_docx === "1";
   const language = (req.body.language || "").trim();
   const requestedJobId = (req.body.job_id || "").trim();
@@ -601,7 +610,8 @@ app.post("/upload", uploadAudio, async (req, res) => {
 app.post(
   "/api/transcribe",
   optionalApiKey,
-  uploadAudio,
+  uploadAny,
+  resolveAudioUploads,
   async (req, res) => {
     const generateDocx = req.body.generate_docx === "1";
     const language = (req.body.language || "").trim();
@@ -738,8 +748,9 @@ app.use((err, req, res, next) => {
   if (err.code === "LIMIT_UNEXPECTED_FILE") {
     return res.status(400).json({
       error: "Unexpected multipart field for file upload.",
-      hint:
-        'Use field name "files", "file", "audio", or "audio_file" for each audio part.',
+      hint: `Use one of these field names for each audio file: ${[
+        ...AUDIO_FILE_FIELD_NAMES,
+      ].join(", ")}.`,
     });
   }
   return res.status(400).json({ error: err.message, code: err.code });
