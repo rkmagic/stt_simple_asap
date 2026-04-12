@@ -107,6 +107,91 @@ function extensionFromMime(mime) {
   return table[m] || ".m4a";
 }
 
+function guessMimeFromFilename(filename) {
+  const ext = (path.extname(filename) || "").toLowerCase();
+  const table = {
+    ".m4a": "audio/m4a",
+    ".mp3": "audio/mpeg",
+    ".mp4": "video/mp4",
+    ".wav": "audio/wav",
+    ".webm": "audio/webm",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".flac": "audio/flac",
+    ".mpeg": "audio/mpeg",
+    ".mpga": "audio/mpeg",
+  };
+  return table[ext] || "application/octet-stream";
+}
+
+/** First bytes — OpenAI also rejects bad payloads; catch Make/JSON mistakes early. */
+function sniffAudioContainer(buffer) {
+  if (!buffer || buffer.length < 16) {
+    return "empty";
+  }
+  const b = buffer;
+  if (b[0] === 0x7b) {
+    return "json";
+  }
+  if (b[0] === 0x5b && b.length > 2 && (b[1] === 0x7b || b[1] === 0x22)) {
+    return "json";
+  }
+  if (b[0] === 0x3c && b[1] === 0x21) {
+    return "html";
+  }
+  if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
+    return "mp4";
+  }
+  if (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) {
+    return "ogg";
+  }
+  if (
+    b[0] === 0x52 &&
+    b[1] === 0x49 &&
+    b[2] === 0x46 &&
+    b[3] === 0x46 &&
+    b[8] === 0x57 &&
+    b[9] === 0x41 &&
+    b[10] === 0x56 &&
+    b[11] === 0x45
+  ) {
+    return "wav";
+  }
+  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) {
+    return "webm";
+  }
+  if (b[0] === 0x66 && b[1] === 0x4c && b[2] === 0x61 && b[3] === 0x43) {
+    return "flac";
+  }
+  if (b[0] === 0xff && (b[1] & 0xe0) === 0xe0) {
+    return "mp3";
+  }
+  if (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) {
+    return "mp3";
+  }
+  return "unknown";
+}
+
+function filenameExtMatchingSniff(filename, sniff) {
+  if (sniff === "unknown" || sniff === "empty") {
+    return filename;
+  }
+  const stem = path.parse(filename).name;
+  const map = {
+    mp4: ".m4a",
+    ogg: ".ogg",
+    mp3: ".mp3",
+    wav: ".wav",
+    webm: ".webm",
+    flac: ".flac",
+  };
+  const ext = map[sniff];
+  if (!ext) {
+    return filename;
+  }
+  return `${stem}${ext}`;
+}
+
 /** Whisper infers format from the multipart filename; multer paths have no extension. */
 function whisperMultipartFilename(file, chunk, chunkCount) {
   if (chunkCount > 1) {
@@ -125,18 +210,68 @@ function whisperMultipartFilename(file, chunk, chunkCount) {
   return name;
 }
 
-async function transcribeWithOpenAI(filePath, language, multipartFilename) {
+async function transcribeWithOpenAI(
+  filePath,
+  language,
+  { clientFilename, clientMime } = {}
+) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set in the environment.");
   }
 
+  const st = await fs.promises.stat(filePath);
+  if (st.size === 0) {
+    const err = new Error(
+      "Uploaded audio is empty (0 bytes). In Make, map the Telegram **binary file** into the multipart file field, not metadata text."
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const buffer = await fs.promises.readFile(filePath);
+  const sniff = sniffAudioContainer(buffer);
+  if (sniff === "json") {
+    const err = new Error(
+      "Upload starts with JSON, not raw audio bytes. Map Telegram’s downloaded **file data** (binary) into the HTTP multipart file field."
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+  if (sniff === "html") {
+    const err = new Error(
+      "Upload looks like HTML, not audio. Check the URL and that you are sending a file body."
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  let filename = safeMultipartBasename(clientFilename) || "audio.m4a";
+  if (!WHISPER_FILENAME_EXT.test(filename)) {
+    const ext = extensionFromMime(clientMime);
+    const dot = filename.lastIndexOf(".");
+    const stem = dot > 0 ? filename.slice(0, dot) : filename;
+    filename = `${stem || "audio"}${ext}`;
+  }
+  if (sniff !== "unknown" && sniff !== "empty") {
+    filename = filenameExtMatchingSniff(filename, sniff);
+  }
+
+  const mimeHead =
+    typeof clientMime === "string" && clientMime.trim()
+      ? clientMime.split(";")[0].trim()
+      : "";
+  const contentType =
+    mimeHead && !/^application\/octet-stream$/i.test(mimeHead)
+      ? mimeHead
+      : guessMimeFromFilename(filename);
+
   const form = new FormData();
-  const filename =
-    safeMultipartBasename(multipartFilename) ||
-    safeMultipartBasename(filePath) ||
-    "audio.m4a";
-  form.append("file", fs.createReadStream(filePath), { filename });
+  form.append("file", buffer, {
+    filename,
+    contentType,
+    knownLength: buffer.length,
+  });
   form.append("model", "whisper-1");
   if (language) {
     form.append("language", language);
@@ -150,6 +285,8 @@ async function transcribeWithOpenAI(filePath, language, multipartFilename) {
         Authorization: `Bearer ${apiKey}`,
         ...form.getHeaders(),
       },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
     }
   );
 
@@ -478,7 +615,7 @@ async function transcribeUploadedFiles(files, { language, generateDocx, jobId })
         const transcriptText = await transcribeWithOpenAI(
           chunk.path,
           lang || undefined,
-          whisperName
+          { clientFilename: whisperName, clientMime: file.mimetype }
         );
 
         const txtFilename = `${id}.txt`;
@@ -644,7 +781,8 @@ app.post("/upload", uploadAny, resolveAudioUploads, async (req, res) => {
       "Transcription error:",
       error.response?.data || error.message
     );
-    const status = error.response?.status || 500;
+    const status =
+      error.response?.status || error.statusCode || 500;
     const apiMessage = error.response?.data?.error?.message;
     const state = error.transcribeState || {};
     const totalItems = state.totalItems ?? uploadedFiles.length;
@@ -727,7 +865,8 @@ app.post(
         "API transcribe error:",
         error.response?.data || error.message
       );
-      const status = error.response?.status || 500;
+      const status =
+        error.response?.status || error.statusCode || 500;
       const apiMessage = error.response?.data?.error?.message;
       res.status(status).json({
         error: apiMessage || error.message || "Failed to transcribe audio.",
