@@ -73,14 +73,70 @@ app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-async function transcribeWithOpenAI(filePath, language) {
+const WHISPER_FILENAME_EXT =
+  /\.(flac|m4a|mp3|mp4|mpeg|mpga|oga|ogg|wav|webm)$/i;
+
+function safeMultipartBasename(raw) {
+  return path
+    .basename(String(raw || "").trim())
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extensionFromMime(mime) {
+  if (!mime) {
+    return ".m4a";
+  }
+  const m = mime.toLowerCase().split(";")[0].trim();
+  const table = {
+    "audio/m4a": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/mp4": ".m4a",
+    "video/mp4": ".mp4",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "application/ogg": ".ogg",
+    "audio/opus": ".ogg",
+    "audio/flac": ".flac",
+  };
+  return table[m] || ".m4a";
+}
+
+/** Whisper infers format from the multipart filename; multer paths have no extension. */
+function whisperMultipartFilename(file, chunk, chunkCount) {
+  if (chunkCount > 1) {
+    return safeMultipartBasename(chunk.path) || "part.webm";
+  }
+  let name = safeMultipartBasename(file.originalname);
+  if (!name) {
+    name = safeMultipartBasename(chunk.path) || "audio";
+  }
+  if (!WHISPER_FILENAME_EXT.test(name)) {
+    const ext = extensionFromMime(file.mimetype);
+    const dot = name.lastIndexOf(".");
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    name = `${stem || "audio"}${ext}`;
+  }
+  return name;
+}
+
+async function transcribeWithOpenAI(filePath, language, multipartFilename) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set in the environment.");
   }
 
   const form = new FormData();
-  form.append("file", fs.createReadStream(filePath));
+  const filename =
+    safeMultipartBasename(multipartFilename) ||
+    safeMultipartBasename(filePath) ||
+    "audio.m4a";
+  form.append("file", fs.createReadStream(filePath), { filename });
   form.append("model", "whisper-1");
   if (language) {
     form.append("language", language);
@@ -414,9 +470,15 @@ async function transcribeUploadedFiles(files, { language, generateDocx, jobId })
           completedItems,
         });
 
+        const whisperName = whisperMultipartFilename(
+          file,
+          chunk,
+          chunks.length
+        );
         const transcriptText = await transcribeWithOpenAI(
           chunk.path,
-          lang || undefined
+          lang || undefined,
+          whisperName
         );
 
         const txtFilename = `${id}.txt`;
