@@ -2,6 +2,10 @@
 
 Upload one or more audio files, send them to the OpenAI Whisper API, review the transcripts in the browser, and download each transcript as `.txt` or `.docx`.
 
+## Why I built this
+
+I had large audio files from meetings, interviews, and similar recordings. Whenever I tried to transcribe them in LLM tools, the files were too big. The same happened with online transcription tools. Paid options existed, but they were too expensive. This app uses the OpenAI Whisper API instead, which makes transcription much cheaper while still handling oversized files (including automatic chunking over the ~25 MB limit).
+
 ## Features
 
 - Multi-file audio upload with drag-and-drop support
