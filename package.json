@@ -11,7 +11,7 @@
     "verify": "npm run verify:age && npm run verify:audit"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.23.4"
   },
   "dependencies": {
     "axios": "1.15.0",

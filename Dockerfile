@@ -1,8 +1,9 @@
-# Node 20 + FFmpeg (required for splitting audio over ~25 MB before Whisper API)
-FROM node:20-bookworm-slim
+# Node 22+ (eMudhra CA advisory: need >=22.23.4) + FFmpeg for large-audio split
+FROM node:22-bookworm-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg \
+  && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+  && update-ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

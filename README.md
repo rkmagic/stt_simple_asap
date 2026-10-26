@@ -73,7 +73,7 @@ If both commands print version info, the app can use FFmpeg for large files. If 
 
 ## Requirements
 
-- Node.js 18+
+- Node.js **22.23.4+** (or **24.22.1+** / **26.12.1+**; required for current CA trust store patches)
 - An OpenAI API key
 - FFmpeg + ffprobe (for files over 25 MB)—see above
 
@@ -107,7 +107,7 @@ npm run dev
 
 ## Docker and Render
 
-The included **[`Dockerfile`](Dockerfile)** builds **Node 20**, installs **FFmpeg** (needed for splitting large audio), runs **`npm ci`**, checks **minimum package age** on the registry, and **`npm audit`**. Deploy as a **Web Service** with **Docker** runtime (for example [Render](https://render.com)) and point the start command at the image default (`node server.js`).
+The included **[`Dockerfile`](Dockerfile)** builds **Node 22** (with an updated system CA store), installs **FFmpeg** (needed for splitting large audio), runs **`npm ci`**, checks **minimum package age** on the registry, and **`npm audit`**. Deploy as a **Web Service** with **Docker** runtime (for example [Render](https://render.com)) and point the start command at the image default (`node server.js`). After changing the image, **redeploy** so Render rebuilds from a fresh base (needed for certificate-store advisories such as eMudhra).
 
 - **[`render.yaml`](render.yaml)** is a [Render Blueprint](https://render.com/docs/blueprint-spec) stub: connect the repo, set **Environment** → **OPENAI_API_KEY**, and optionally **API_KEY** for `/api/transcribe`.
 - **Port:** the server listens on **`process.env.PORT`** (Render sets this automatically).
